@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-######################################
-# Stage 1: Builder (Ubuntu 22.04 Jammy)
-######################################
+############################
+# Stage 1: Builder (Ubuntu 22.04)
+############################
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,19 +12,18 @@ RUN apt-get update && apt-get install -y \
     curl ca-certificates wget xz-utils software-properties-common \
  && rm -rf /var/lib/apt/lists/*
 
-# Download e compila manualmente o Berkeley DB 4.8 (sem script externo)
+# Download e compilação manual do Berkeley DB 4.8 com SHA256 validado
 WORKDIR /tmp
-RUN curl -O http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz && \
-    echo "12edc0a93b6e26f3925e064a3fefcdb7 db-4.8.30.NC.tar.gz" | md5sum -c && \
+RUN curl -LO https://downloads.sourceforge.net/project/libdb/4.8.30/db-4.8.30.NC.tar.gz && \
+    echo "12edc0df75bf9abd7f82f821795bcee50f42cb2e5f76a6a281b85732798364ef  db-4.8.30.NC.tar.gz" | sha256sum -c - && \
     tar -xzf db-4.8.30.NC.tar.gz && \
     cd db-4.8.30.NC/build_unix && \
     ../dist/configure --enable-cxx --disable-shared --with-pic --prefix=/opt/db4 && \
-    make -j"$(nproc)" && make install && \
-    rm -rf /tmp/*
+    make -j"$(nproc)" && make install
 
 ENV BDB_PREFIX=/opt/db4
 
-# Clona e compila o HTMLCOIN Core
+# Clona e compila o HTMLCOIN
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
 ARG HTMLCOIN_REF=master
 
@@ -39,9 +38,9 @@ RUN ./autogen.sh \
  && make -j"$(nproc)" \
  && strip src/htmlcoind src/htmlcoin-cli || true
 
-######################################
-# Stage 2: Runtime (Ubuntu 22.04 Jammy)
-######################################
+############################
+# Stage 2: Runtime (Ubuntu 22.04)
+############################
 FROM ubuntu:22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
