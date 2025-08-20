@@ -1,73 +1,58 @@
-# syntax=docker/dockerfile:1
-
-############################################
-# 1) Builder (Ubuntu 22.04)
-############################################
+# Etapa 1: Builder
 FROM ubuntu:22.04 AS builder
+
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Variáveis
+ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
+ARG HTMLCOIN_REF=main
+
+# Dependências
 RUN apt-get update && apt-get install -y \
-    build-essential libtool autotools-dev automake pkg-config \
-    libssl-dev libevent-dev bsdmainutils git cmake libgmp-dev \
-    wget curl xz-utils software-properties-common libboost-all-dev \
-    && rm -rf /var/lib/apt/lists/*
-
+  git curl wget build-essential autoconf libtool pkg-config \
+  libssl-dev libevent-dev libboost-all-dev \
+  libminiupnpc-dev libzmq3-dev libdbus-1-dev \
+  libgmp-dev  # <=== ESSENCIAL PARA GMP (__gmpn_sub_n)
+  
+# Berkeley DB 4.8
 WORKDIR /tmp
-
-# Baixa o Berkeley DB 4.8.30 diretamente do site oficial da Oracle
 RUN wget http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz && \
-    tar -xzf db-4.8.30.NC.tar.gz
-
-# Aplica patch para evitar conflito de símbolo __atomic_compare_exchange
-RUN sed -i 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' db-4.8.30.NC/dbinc/atomic.h
-
-# Compila o Berkeley DB com suporte C++
-RUN cd db-4.8.30.NC/build_unix && \
+    tar -xzf db-4.8.30.NC.tar.gz && \
+    cd db-4.8.30.NC/build_unix && \
     ../dist/configure --enable-cxx --disable-shared --with-pic --prefix=/opt/db4 && \
     make -j"$(nproc)" && make install
 
-ENV BDB_PREFIX=/opt/db4
-
-# Clona e compila o HTMLCOIN Core (branch correto atualizado)
-ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
-ARG HTMLCOIN_REF=master-2.5
-
+# Clone do HTMLCOIN
 WORKDIR /build
 RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
-
 WORKDIR /build/HTMLCOIN
+
+# Compilação
 RUN ./autogen.sh && \
-    ./configure \
-      BDB_CFLAGS="-I${BDB_PREFIX}/include" \
-      BDB_LIBS="-L${BDB_PREFIX}/lib -ldb_cxx-4.8" && \
-    make -j"$(nproc)" && \
-    strip src/htmlcoind src/htmlcoin-cli || true
+    ./configure --with-incompatible-bdb --with-gmp --with-gmp-lib=/usr/lib/x86_64-linux-gnu/ --with-gmp-include=/usr/include/ && \
+    make -j"$(nproc)"
 
-############################################
-# 2) Runtime (Ubuntu 22.04)
-############################################
-FROM ubuntu:22.04 AS runtime
-ENV DEBIAN_FRONTEND=noninteractive
+# Etapa 2: Runtime
+FROM ubuntu:22.04
 
+# Dependências mínimas
 RUN apt-get update && apt-get install -y \
-    libevent-2.1-7 libgmp10 libssl3 \
-    libboost-system1.74.0 libboost-filesystem1.74.0 \
-    libboost-program-options1.74.0 libboost-thread1.74.0 \
-    && rm -rf /var/lib/apt/lists/*
+  libssl3 libevent-2.1-7 libboost-system1.74.0 libboost-filesystem1.74.0 \
+  libboost-program-options1.74.0 libboost-thread1.74.0 libgmp10 && \
+  rm -rf /var/lib/apt/lists/*
 
-# Copia Berkeley DB compilado
+# Copia BerkeleyDB
 COPY --from=builder /opt/db4 /opt/db4
-ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 
-# Copia binários compilados do HTMLCOIN
+# Copia binários HTMLCOIN
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
 # Cria usuário e diretório de dados
-RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin && \
-    mkdir -p /home/htmlcoin/.htmlcoin
+RUN useradd -m -s /bin/bash htmlcoin && mkdir -p /data && chown htmlcoin:htmlcoin /data
+USER htmlcoin
+WORKDIR /data
 
-VOLUME ["/home/htmlcoin/.htmlcoin"]
+# Executável padrão
+ENTRYPOINT ["htmlcoind"]
 
-ENTRYPOINT ["/usr/local/bin/htmlcoind"]
-CMD ["-datadir=/home/htmlcoin/.htmlcoin", "-printtoconsole"]
