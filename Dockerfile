@@ -6,21 +6,23 @@
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build deps
 RUN apt-get update && apt-get install -y \
     build-essential libtool autotools-dev automake pkg-config \
     libssl-dev libevent-dev bsdmainutils git cmake libgmp-dev \
     curl ca-certificates wget xz-utils software-properties-common \
  && rm -rf /var/lib/apt/lists/*
 
-# Compila Berkeley DB 4.8 (necessário para wallet.dat antigas)
+# Compila Berkeley DB 4.8 (necessário para wallet)
 WORKDIR /tmp
 RUN curl -fsSL https://raw.githubusercontent.com/bitcoin/bitcoin/24.x/contrib/install_db4.sh -o install_db4.sh \
+ && mkdir -p /opt/db4 \
  && bash install_db4.sh /opt/db4 \
  && rm -rf /tmp/*
-ENV BDB_PREFIX=/opt/db4
 
-# Código do HTMLCOIN (ajuste branch se precisar)
+# ⬇️ ATENÇÃO: o script instala em /opt/db4/db4
+ENV BDB_PREFIX=/opt/db4/db4
+
+# Código do HTMLCOIN (ajuste os ARGs se quiser outro fork/branch/tag)
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
 ARG HTMLCOIN_REF=master
 
@@ -29,7 +31,6 @@ RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
 WORKDIR /build/HTMLCOIN
 
 # Autotools padrão
-# Se o configure falhar por db4, confira as flags BDB_* abaixo
 RUN ./autogen.sh \
  && ./configure \
       BDB_CFLAGS="-I${BDB_PREFIX}/include" \
@@ -40,30 +41,29 @@ RUN ./autogen.sh \
 ############################
 # 2) Runtime (Ubuntu 22.04)
 ############################
-FROM ubuntu:22.04 as runtime
+FROM ubuntu:22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Libs de runtime (Boost/SSL/Event/GMP do Jammy)
 RUN apt-get update && apt-get install -y \
     libevent-2.1-7 libgmp10 libssl3 \
     libboost-system1.74.0 libboost-filesystem1.74.0 \
     libboost-program-options1.74.0 libboost-thread1.74.0 \
  && rm -rf /var/lib/apt/lists/*
 
-# DB4 compilado no builder
+# DB4 do builder
 COPY --from=builder /opt/db4 /opt/db4
-ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/db4/db4/lib:${LD_LIBRARY_PATH}"
 
-# Binários do HTMLCOIN
+# Binários
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
-# Usuário/dados (pasta no container; monte no host via compose)
+# Usuário e diretórios
 RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
  && mkdir -p /home/htmlcoin/.htmlcoin
 
 VOLUME ["/home/htmlcoin/.htmlcoin"]
 
-# Entrada padrão: roda o daemon mostrando logs no console
+# Sem su/su-exec; processa direto
 ENTRYPOINT ["/usr/local/bin/htmlcoind"]
 CMD ["-datadir=/home/htmlcoin/.htmlcoin","-printtoconsole"]
