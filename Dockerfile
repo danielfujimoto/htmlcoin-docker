@@ -5,28 +5,31 @@
 ############################
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Build deps
 RUN apt-get update && apt-get install -y \
     build-essential libtool autotools-dev automake pkg-config \
     libssl-dev libevent-dev bsdmainutils git cmake libgmp-dev \
     curl ca-certificates wget xz-utils software-properties-common \
  && rm -rf /var/lib/apt/lists/*
 
-# Compila Berkeley DB 4.8 (necessário para a wallet)
+# Compila Berkeley DB 4.8 (necessário para wallet.dat antigas)
 WORKDIR /tmp
 RUN curl -fsSL https://raw.githubusercontent.com/bitcoin/bitcoin/24.x/contrib/install_db4.sh -o install_db4.sh \
  && bash install_db4.sh /opt/db4 \
  && rm -rf /tmp/*
-
 ENV BDB_PREFIX=/opt/db4
 
-# Pega o código do HTMLCOIN (ajuste se usar outro fork/branch)
+# Código do HTMLCOIN (ajuste branch se precisar)
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
 ARG HTMLCOIN_REF=master
+
 WORKDIR /build
 RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
 WORKDIR /build/HTMLCOIN
 
-# Autotools padrão (ajuste se o projeto usar CMake)
+# Autotools padrão
+# Se o configure falhar por db4, confira as flags BDB_* abaixo
 RUN ./autogen.sh \
  && ./configure \
       BDB_CFLAGS="-I${BDB_PREFIX}/include" \
@@ -37,8 +40,10 @@ RUN ./autogen.sh \
 ############################
 # 2) Runtime (Ubuntu 22.04)
 ############################
-FROM ubuntu:22.04 AS runtime
+FROM ubuntu:22.04 as runtime
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Libs de runtime (Boost/SSL/Event/GMP do Jammy)
 RUN apt-get update && apt-get install -y \
     libevent-2.1-7 libgmp10 libssl3 \
     libboost-system1.74.0 libboost-filesystem1.74.0 \
@@ -53,12 +58,12 @@ ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
-# Usuário e diretórios (vamos rodar como root pra simplificar permissões de bind-mount)
+# Usuário/dados (pasta no container; monte no host via compose)
 RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
  && mkdir -p /home/htmlcoin/.htmlcoin
 
 VOLUME ["/home/htmlcoin/.htmlcoin"]
 
-# Sem su/su-exec; ENTRYPOINT direto
+# Entrada padrão: roda o daemon mostrando logs no console
 ENTRYPOINT ["/usr/local/bin/htmlcoind"]
 CMD ["-datadir=/home/htmlcoin/.htmlcoin","-printtoconsole"]
