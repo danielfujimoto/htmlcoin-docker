@@ -14,23 +14,23 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /tmp
 
-# 1) Baixa diretamente do site oficial da Oracle (link estável)
+# 1) Baixa o Berkeley DB 4.8.30 diretamente do link oficial da Oracle
 RUN wget http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz && \
     tar -xzf db-4.8.30.NC.tar.gz
 
-# 2) Aplica patch para evitar conflito de símbolo no build do DB4.8
+# 2) Aplica patch para evitar conflito de símbolos (__atomic_compare_exchange)
 RUN sed -i 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' db-4.8.30.NC/dbinc/atomic.h
 
-# 3) Compila o Berkeley DB 4.8 com suporte C++
+# 3) Compila o Berkeley DB com suporte a C++
 RUN cd db-4.8.30.NC/build_unix && \
     ../dist/configure --enable-cxx --disable-shared --with-pic --prefix=/opt/db4 && \
     make -j"$(nproc)" && make install
 
 ENV BDB_PREFIX=/opt/db4
 
-# 4) Clonar e compilar o HTMLCOIN Core
+# 4) Clona e compila o HTMLCOIN Core
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
-ARG HTMLCOIN_REF=HEAD  # Usa o branch padrão da repo
+ARG HTMLCOIN_REF=master-2.5  # Ajuste para o branch correto
 
 WORKDIR /build
 RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
@@ -59,11 +59,11 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /opt/db4 /opt/db4
 ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 
-# Copia binários compilados do HTMLCOIN
+# Copia os binários compilados do HTMLCOIN
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
-# Cria usuário e diretório de dados
+# Cria o usuário e diretório de dados
 RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
  && mkdir -p /home/htmlcoin/.htmlcoin
 
