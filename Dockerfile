@@ -9,28 +9,28 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     build-essential libtool autotools-dev automake pkg-config \
     libssl-dev libevent-dev bsdmainutils git cmake libgmp-dev \
-    wget curl xz-utils software-properties-common \
- && rm -rf /var/lib/apt/lists/*
+    wget curl xz-utils software-properties-common libboost-all-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
 
-# 1) Baixa o Berkeley DB 4.8.30 diretamente do link oficial da Oracle
+# Baixa o Berkeley DB 4.8.30 diretamente do site oficial da Oracle
 RUN wget http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz && \
     tar -xzf db-4.8.30.NC.tar.gz
 
-# 2) Aplica patch para evitar conflito de símbolos (__atomic_compare_exchange)
+# Aplica patch para evitar conflito de símbolo __atomic_compare_exchange
 RUN sed -i 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' db-4.8.30.NC/dbinc/atomic.h
 
-# 3) Compila o Berkeley DB com suporte a C++
+# Compila o Berkeley DB com suporte C++
 RUN cd db-4.8.30.NC/build_unix && \
     ../dist/configure --enable-cxx --disable-shared --with-pic --prefix=/opt/db4 && \
     make -j"$(nproc)" && make install
 
 ENV BDB_PREFIX=/opt/db4
 
-# 4) Clona e compila o HTMLCOIN Core
+# Clona e compila o HTMLCOIN Core (branch correto atualizado)
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
-ARG HTMLCOIN_REF=master-2.5  # Ajuste para o branch correto
+ARG HTMLCOIN_REF=master-2.5
 
 WORKDIR /build
 RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
@@ -53,19 +53,19 @@ RUN apt-get update && apt-get install -y \
     libevent-2.1-7 libgmp10 libssl3 \
     libboost-system1.74.0 libboost-filesystem1.74.0 \
     libboost-program-options1.74.0 libboost-thread1.74.0 \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Copia Berkeley DB compilado
 COPY --from=builder /opt/db4 /opt/db4
 ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 
-# Copia os binários compilados do HTMLCOIN
+# Copia binários compilados do HTMLCOIN
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
-# Cria o usuário e diretório de dados
-RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
- && mkdir -p /home/htmlcoin/.htmlcoin
+# Cria usuário e diretório de dados
+RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin && \
+    mkdir -p /home/htmlcoin/.htmlcoin
 
 VOLUME ["/home/htmlcoin/.htmlcoin"]
 
