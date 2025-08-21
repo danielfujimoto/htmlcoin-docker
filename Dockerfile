@@ -6,43 +6,36 @@
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Ferramentas de build e libs de desenvolvimento
+# Ferramentas de build + libs de desenvolvimento
 RUN apt-get update && apt-get install -y \
   build-essential libtool autotools-dev automake pkg-config \
   libssl-dev libevent-dev libboost-all-dev \
-  wget curl git ca-certificates m4 xz-utils \
+  libgmp-dev wget curl git ca-certificates xz-utils m4 \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
 
 # -----------------------------------------------------------
-# A) GMP 6.2.1 (com C++ bindings)
-# -----------------------------------------------------------
-RUN wget -q https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz \
- && tar -xf gmp-6.2.1.tar.xz \
- && cd gmp-6.2.1 \
- && ./configure --enable-cxx --prefix=/usr/local \
- && make -j"$(nproc)" \
- && make install \
- && ldconfig
-
-# -----------------------------------------------------------
-# B) Berkeley DB 4.8 com atomics em assembly (evita patch)
+# Berkeley DB 4.8 + patch no atomic.h (evita conflito com GCC)
 # -----------------------------------------------------------
 RUN wget -q http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz \
  && tar -xzf db-4.8.30.NC.tar.gz
 
+# Patch: renomeia TODAS as ocorrências de __atomic_compare_exchange
+# Referência: ver discussões/patches que fazem exatamente isso em atomic.h
+# (ex.: fink-commits/marc & guias de build de altcoins)
+RUN sed -i 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' db-4.8.30.NC/dbinc/atomic.h \
+ && grep -q "__atomic_compare_exchange_db" db-4.8.30.NC/dbinc/atomic.h
+
+# Compila DB4.8 (recomendado estático p/ carteiras antigas)
 ENV BDB_PREFIX=/opt/db4
-# dica: define a detecção de atomics e mutex p/ evitar __atomic_compare_exchange
-ENV db_cv_atomic=x86/gcc-assembly
 RUN cd db-4.8.30.NC/build_unix \
- && ../dist/configure --enable-cxx --disable-shared --with-pic \
-      --with-mutex=x86_64/gcc-assembly --prefix=${BDB_PREFIX} \
+ && ../dist/configure --enable-cxx --disable-shared --with-pic --prefix=${BDB_PREFIX} \
  && make -j"$(nproc)" \
  && make install
 
 # -----------------------------------------------------------
-# C) HTMLCOIN Core (branch master-2.5)
+# HTMLCOIN Core (branch master-2.5)
 # -----------------------------------------------------------
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
 ARG HTMLCOIN_REF=master-2.5
@@ -52,15 +45,15 @@ RUN git clone --depth=1 --branch ${HTMLCOIN_REF} ${HTMLCOIN_REPO} HTMLCOIN
 
 WORKDIR /build/HTMLCOIN
 
-# Alguns ambientes falham na detecção do GMP -> força o cache de autoconf
-ENV ac_cv_lib_gmp___gmpn_sub_n=yes
-
+# Autotools + flags do DB4 e do GMP; sem GUI/Qt
 RUN ./autogen.sh && \
     ./configure \
       --without-gui \
-      CPPFLAGS="-I/usr/local/include -I${BDB_PREFIX}/include" \
-      LDFLAGS="-L/usr/local/lib -L${BDB_PREFIX}/lib -Wl,--no-as-needed" \
-      LIBS="-lgmp -lgmpxx -ldb_cxx-4.8" \
+      BDB_CFLAGS="-I${BDB_PREFIX}/include" \
+      BDB_LIBS="-L${BDB_PREFIX}/lib -ldb_cxx-4.8" \
+      CPPFLAGS="-I/usr/include" \
+      LDFLAGS="-L/usr/lib/x86_64-linux-gnu" \
+      LIBS="-lgmp -lgmpxx" \
     && make -j"$(nproc)" \
     && strip src/htmlcoind src/htmlcoin-cli || true
 
@@ -75,16 +68,26 @@ RUN apt-get update && apt-get install -y \
   libevent-2.1-7 libssl3 \
   libboost-system1.74.0 libboost-filesystem1.74.0 \
   libboost-program-options1.74.0 libboost-thread1.74.0 \
+  libgmp10 \
   && rm -rf /var/lib/apt/lists/*
 
-# DB4 do builder e GMP (caso linke dinâmico)
+# DB4 do builder (para carteira antiga)
 COPY --from=builder /opt/db4 /opt/db4
-COPY --from=builder /usr/local/lib/libgmp* /usr/local/lib/
-RUN ldconfig
+ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 
 # Binários HTMLCOIN
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
 # Usuário e diretório de dados
-RUN useradd -m -d /home/htmlcoin -s /usr
+RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
+ && mkdir -p /home/htmlcoin/.htmlcoin \
+ && chown -R htmlcoin:htmlcoin /home/htmlcoin
+
+VOLUME ["/home/htmlcoin/.htmlcoin"]
+
+# Portas (opcional)
+EXPOSE 4888 4889
+
+ENTRYPOINT ["/usr/local/bin/htmlcoind"]
+CMD ["-datadir=/home/htmlcoin/.htmlcoin","-printtoconsole"]
