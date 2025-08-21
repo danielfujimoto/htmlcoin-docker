@@ -9,13 +9,24 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Instalar todas as dependências necessárias
 RUN apt-get update && apt-get install -y \
   build-essential libtool autotools-dev automake pkg-config bsdmainutils python3 \
-  libgmp-dev libssl-dev libevent-dev \
+  libssl-dev libevent-dev \
   libboost-system-dev libboost-filesystem-dev libboost-chrono-dev \
   libboost-test-dev libboost-thread-dev libboost-all-dev \
   cmake m4 xz-utils ca-certificates git wget curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
+
+# -----------------------------------------------------------
+# GMP 6.2.1 (compilado com compatibilidade)
+# -----------------------------------------------------------
+RUN wget -q https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz \
+  && tar -xf gmp-6.2.1.tar.xz \
+  && cd gmp-6.2.1 \
+  && ./configure --enable-cxx --prefix=/usr/local/gmp-6.2.1 \
+  && make -j"$(nproc)" \
+  && make install \
+  && ldconfig
 
 # -----------------------------------------------------------
 # Berkeley DB 4.8
@@ -31,6 +42,7 @@ RUN wget -q http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz \
   && make install
 
 ENV BDB_PREFIX=/opt/db4
+ENV GMP_PREFIX=/usr/local/gmp-6.2.1
 
 # -----------------------------------------------------------
 # HTMLCOIN Core
@@ -44,13 +56,14 @@ RUN git clone --recursive --depth=1 --shallow-submodules \
 
 WORKDIR /build/HTMLCOIN
 
-# Configurar e compilar
+# Configurar e compilar com GMP explícito
 RUN ./autogen.sh && \
     ./configure \
       --without-gui \
       --disable-wallet \
-      CPPFLAGS="-I${BDB_PREFIX}/include" \
-      LDFLAGS="-L${BDB_PREFIX}/lib" \
+      CPPFLAGS="-I${BDB_PREFIX}/include -I${GMP_PREFIX}/include" \
+      LDFLAGS="-L${BDB_PREFIX}/lib -L${GMP_PREFIX}/lib -Wl,-rpath,${GMP_PREFIX}/lib" \
+      LIBS="-lgmp -lgmpxx" \
     && make -j"$(nproc)" \
     && strip src/htmlcoind src/htmlcoin-cli
 
@@ -62,13 +75,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Dependências de runtime
 RUN apt-get update && apt-get install -y \
-  libevent-2.1-7 libssl3 libgmp10 \
+  libevent-2.1-7 libssl3 \
   libboost-system1.74.0 libboost-filesystem1.74.0 \
   libboost-program-options1.74.0 libboost-thread1.74.0 \
   && rm -rf /var/lib/apt/lists/*
 
-# Copiar Berkeley DB
+# Copiar Berkeley DB e GMP
 COPY --from=builder /opt/db4 /opt/db4
+COPY --from=builder /usr/local/gmp-6.2.1 /usr/local/gmp-6.2.1
 RUN ldconfig
 
 # Copiar binários
@@ -83,7 +97,7 @@ RUN useradd -m -d /home/htmlcoin -s /bin/bash htmlcoin \
 VOLUME ["/home/htmlcoin/.htmlcoin"]
 EXPOSE 4888 4889
 
-ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/db4/lib:/usr/local/gmp-6.2.1/lib:${LD_LIBRARY_PATH}"
 
 ENTRYPOINT ["/usr/local/bin/htmlcoind"]
 CMD ["-datadir=/home/htmlcoin/.htmlcoin", "-printtoconsole"]
