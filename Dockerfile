@@ -6,28 +6,19 @@
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Ferramentas de build e libs
+# Instalar todas as dependências necessárias conforme o README
 RUN apt-get update && apt-get install -y \
-  build-essential libtool autotools-dev automake pkg-config \
-  libssl-dev libevent-dev libboost-all-dev \
+  build-essential libtool autotools-dev automake pkg-config bsdmainutils python3 \
+  libgmp3-dev libssl-dev libevent-dev \
+  libboost-system-dev libboost-filesystem-dev libboost-chrono-dev \
+  libboost-test-dev libboost-thread-dev libboost-all-dev \
   cmake m4 xz-utils ca-certificates git wget curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
 
 # -----------------------------------------------------------
-# A) GMP 6.2.1 (com C++ bindings) - corrigido
-# -----------------------------------------------------------
-RUN wget -q https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz \
- && tar -xf gmp-6.2.1.tar.xz \
- && cd gmp-6.2.1 \
- && ./configure --enable-cxx --prefix=/usr/local \
- && make -j"$(nproc)" \
- && make install \
- && ldconfig
-
-# -----------------------------------------------------------
-# B) Berkeley DB 4.8 (corrigido)
+# Berkeley DB 4.8 (usando o script oficial de instalação)
 # -----------------------------------------------------------
 RUN wget -q http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz \
   && echo '12edc0df75bf9abd7f82f821795bcee50f42cb2e5f76a6a281b85732798364ef db-4.8.30.NC.tar.gz' | sha256sum -c \
@@ -42,7 +33,7 @@ RUN wget -q http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz \
 ENV BDB_PREFIX=/opt/db4
 
 # -----------------------------------------------------------
-# C) HTMLCOIN Core (corrigido)
+# HTMLCOIN Core (com patches para compatibilidade)
 # -----------------------------------------------------------
 ARG HTMLCOIN_REPO=https://github.com/HTMLCOIN/HTMLCOIN.git
 ARG HTMLCOIN_REF=master-2.5
@@ -53,15 +44,23 @@ RUN git clone --recursive --depth=1 --shallow-submodules \
 
 WORKDIR /build/HTMLCOIN
 
-# Corrigindo a configuração para encontrar libgmp
+# Aplicar patch para compatibilidade com GMP moderno se necessário
+RUN if [ -f "contrib/gmp-patch" ]; then patch -p1 < contrib/gmp-patch; fi || true
+
+# Configurar e compilar com flags otimizadas
 RUN ./autogen.sh && \
     ./configure \
       --without-gui \
-      CPPFLAGS="-I/usr/local/include -I${BDB_PREFIX}/include" \
-      LDFLAGS="-L/usr/local/lib -L${BDB_PREFIX}/lib -Wl,-rpath,/usr/local/lib" \
-      LIBS="-lgmp -lgmpxx -ldb_cxx-4.8" \
-    && make -j"$(nproc)" \
-    && strip src/htmlcoind src/htmlcoin-cli src/test/test_htmlcoin || true
+      --disable-wallet \
+      --with-gmp=yes \
+      --with-gmp-prefix=/usr \
+      CPPFLAGS="-I${BDB_PREFIX}/include" \
+      LDFLAGS="-L${BDB_PREFIX}/lib -Wl,-rpath,${BDB_PREFIX}/lib" \
+      CXXFLAGS="--param ggc-min-expand=1 --param ggc-min-heapsize=32768" \
+    || (cat config.log && exit 1)
+
+RUN make -j"$(nproc)" && \
+    strip src/htmlcoind src/htmlcoin-cli || true
 
 ############################################
 # 2) Runtime: Ubuntu 22.04
@@ -69,40 +68,34 @@ RUN ./autogen.sh && \
 FROM ubuntu:22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Somente libs necessárias em runtime
+# Dependências de runtime mínimas
 RUN apt-get update && apt-get install -y \
-  libevent-2.1-7 libssl3 \
+  libevent-2.1-7 libssl3 libgmp10 \
   libboost-system1.74.0 libboost-filesystem1.74.0 \
   libboost-program-options1.74.0 libboost-thread1.74.0 \
   && rm -rf /var/lib/apt/lists/*
 
-# DB4 e GMP do builder
+# Copiar Berkeley DB
 COPY --from=builder /opt/db4 /opt/db4
-COPY --from=builder /usr/local/lib/libgmp* /usr/local/lib/
 RUN ldconfig
 
-# Binários HTMLCOIN (com verificação de existência)
+# Copiar binários
 RUN mkdir -p /usr/local/bin
 COPY --from=builder /build/HTMLCOIN/src/htmlcoind /usr/local/bin/
 COPY --from=builder /build/HTMLCOIN/src/htmlcoin-cli /usr/local/bin/
 
-# Verifica se os binários existem
+# Verificar se os binários existem
 RUN test -f /usr/local/bin/htmlcoind && test -f /usr/local/bin/htmlcoin-cli
 
-# Usuário e diretório de dados
-RUN useradd -m -d /home/htmlcoin -s /usr/sbin/nologin htmlcoin \
+# Configurar usuário e diretórios
+RUN useradd -m -d /home/htmlcoin -s /bin/bash htmlcoin \
  && mkdir -p /home/htmlcoin/.htmlcoin \
  && chown -R htmlcoin:htmlcoin /home/htmlcoin
 
 VOLUME ["/home/htmlcoin/.htmlcoin"]
-
-# Portas
 EXPOSE 4888 4889
 
-# Libs no runtime
-ENV LD_LIBRARY_PATH="/usr/local/lib:/opt/db4/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/db4/lib:${LD_LIBRARY_PATH}"
 
 ENTRYPOINT ["/usr/local/bin/htmlcoind"]
-CMD ["-datadir=/home/htmlcoin/.htmlcoin","-printtoconsole"]
-ENTRYPOINT ["/usr/local/bin/htmlcoind"]
-CMD ["-datadir=/home/htmlcoin/.htmlcoin","-printtoconsole"]
+CMD ["-datadir=/home/htmlcoin/.htmlcoin", "-printtoconsole"]
